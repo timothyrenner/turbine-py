@@ -3,6 +3,32 @@ from typing import Callable, List, Iterable
 from functools import wraps
 from itertools import repeat
 
+# TODO Configurable queue sizes.
+# TODO Implement union
+# TODO Implement gather
+# TODO Implement select
+# TODO Implement splatter
+# TODO Implement spread
+# TODO Implement collect
+
+# TODO Docstring source
+# TODO Docstring scatter
+# TODO Docstring union
+# TODO Docstring gather
+# TODO Docstring select
+# TODO Docstring splatter
+# TODO Docstring spread
+# TODO Docstring collect
+# TODO Docstring sink
+
+# TODO Test scatter
+# TODO Test union
+# TODO Test gather
+# TODO Test select
+# TODO Test splatter
+# TODO Test spread
+# TODO Test collect
+
 
 class Turbine:
     def __init__(self):
@@ -16,12 +42,19 @@ class Turbine:
         if outbound_name not in self._channels:
             self._channels[outbound_name] = Queue()
 
+        # Now do the real decorator.
         def decorator(f: Callable) -> Callable:
             @wraps(f)
             async def wrapper(*args, **kwargs):
+                # Call the wrapped function on the input...
                 value = f(*args, **kwargs)
+                # ... and drop that on the outbound channel.
                 await self._channels[outbound_name].put(value)
 
+            # The entry point will get called with Turbine.run. We need this
+            # separate from other tasks because it's not an infinite loop.
+            # That's really the only difference between this decorator and the
+            # others ... no while True.
             self._entry_point = wrapper
             return wrapper
 
@@ -56,22 +89,22 @@ class Turbine:
         return decorator
 
     def union(self):
-        pass  # TODO: Implement as decorator.
+        pass
 
     def gather(self):
-        pass  # TODO: Implement as decorator.
+        pass
 
     def select(self):
-        pass  # TODO: Implement as decorator.
+        pass
 
     def splatter(self):
-        pass  # TODO: Implement as decorator.
+        pass
 
     def spread(self):
-        pass  # TODO: Implement as decorator.
+        pass
 
     def collect(self):
-        pass  # TODO: Implement as decorator.
+        pass
 
     def sink(self, inbound_name: str) -> Callable:
         def decorator(f: Callable) -> Callable:
