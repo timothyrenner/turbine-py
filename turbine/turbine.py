@@ -1,6 +1,5 @@
 from asyncio import Queue, ensure_future, get_event_loop
 from typing import Callable, List, Iterable
-from functools import wraps
 from itertools import repeat
 
 # TODO Configurable queue sizes.
@@ -44,7 +43,6 @@ class Turbine:
 
         # Now do the real decorator.
         def decorator(f: Callable) -> Callable:
-            @wraps(f)
             async def wrapper(*args, **kwargs):
                 # Call the wrapped function on the input...
                 value = f(*args, **kwargs)
@@ -56,7 +54,7 @@ class Turbine:
             # That's really the only difference between this decorator and the
             # others ... no while True.
             self._entry_point = wrapper
-            return wrapper
+            return f
 
         return decorator
 
@@ -115,6 +113,7 @@ class Turbine:
                     self._channels[inbound_name].task_done()
 
             self._tasks.append(task)
+            return f
 
         return decorator
 
