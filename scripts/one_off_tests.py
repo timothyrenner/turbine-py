@@ -18,7 +18,7 @@ def print_val(val):
     print(val)
 
 
-@topology.sink("output_2")
+@topology.sink("output_2", num_tasks=2)
 def print_val2(val):
     print(val.upper())
 

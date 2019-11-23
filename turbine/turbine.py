@@ -104,7 +104,7 @@ class Turbine:
     def collect(self):
         pass
 
-    def sink(self, inbound_name: str) -> Callable:
+    def sink(self, inbound_name: str, num_tasks: int = 1) -> Callable:
         def decorator(f: Callable) -> Callable:
             async def task():
                 while True:
@@ -112,7 +112,9 @@ class Turbine:
                     f(value)
                     self._channels[inbound_name].task_done()
 
-            self._tasks.append(task)
+            # Create the tasks for the sinks.
+            for _ in range(num_tasks):
+                self._tasks.append(task)
             return f
 
         return decorator
