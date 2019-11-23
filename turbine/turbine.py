@@ -1,5 +1,6 @@
-from asyncio import Queue, create_task, run as async_run
-from typing import Callable, List, Iterable
+import asyncio
+from asyncio import Queue, create_task, run as async_run, get_event_loop
+from typing import Callable, List, Iterable, Dict, Any, TypeVar
 from itertools import repeat
 
 # TODO Configurable queue sizes.
@@ -25,6 +26,7 @@ from itertools import repeat
 # TODO Test splatter
 # TODO Test spread
 # TODO Test collect
+T = TypeVar("T")
 
 
 class Turbine:
@@ -34,6 +36,7 @@ class Turbine:
         self._channel_names = set()
         self._entry_point = None
         self._tasks = []
+        self._running_tasks = []
 
     def _add_channels(self, channels: List[str]) -> None:
         self._channel_names.update(channels)
@@ -86,7 +89,7 @@ class Turbine:
         return decorator
 
     def union(self):
-        pass
+        pass  # ! This is a tough one. In Clojure I used alts!!.
 
     def gather(
         self, inbound_names: List[str], outbound_name: str, num_tasks: int = 1
@@ -112,8 +115,57 @@ class Turbine:
 
         return decorator
 
-    def select(self):
-        pass
+    def select(
+        self,
+        inbound_channel: str,
+        outbound_channels: Dict[T, str],
+        selector_fn: Callable[[Any], T],
+        default_outbound_channel: str = None,
+        num_tasks: int = 1,
+    ) -> Callable:
+        def decorator(f: Callable) -> Callable:
+            self._add_channels(
+                list(outbound_channels.values()) + [inbound_channel]
+            )
+            if default_outbound_channel:
+                self._add_channels([default_outbound_channel])
+
+            # Create the async task that executes the function.
+            async def task():
+                while True:
+                    value = await self._channels[inbound_channel].get()
+                    output = f(value)
+                    selector_value = selector_fn(output)
+                    if (
+                        selector_value not in outbound_channels
+                        and default_outbound_channel
+                    ):
+                        # selector value is not in the outbound channel map,
+                        # put on default.
+                        await self._channels[default_outbound_channel].put(
+                            output
+                        )
+                    elif selector_value not in outbound_channels:
+                        # selector value is not in the outbound channel map and
+                        # there isn't a default outbound channel.
+                        raise ValueError(
+                            "No channel for selector value {value}. "
+                            "Add a default channel."
+                        )
+                        self._channels[inbound_channel].task_done()
+                    else:
+                        # selector value is in the outbound channel map, put
+                        # the value on that channel.
+                        await self._channels[
+                            outbound_channels[selector_value]
+                        ].put(output)
+                    self._channels[inbound_channel].task_done()
+
+            for _ in range(num_tasks):
+                self._tasks.append(task)
+            return f
+
+        return decorator
 
     def splatter(self):
         pass
@@ -144,19 +196,28 @@ class Turbine:
 
         return decorator
 
+    def _shutdown_and_raise(
+        self, loop: asyncio.AbstractEventLoop, context: Dict[str, Any]
+    ):
+        for t in self._running_tasks:
+            t.cancel()
+        loop.stop()
+        raise context["exception"]
+
     async def _run_tasks(self, seq: Iterable) -> None:
+        get_event_loop().set_exception_handler(self._shutdown_and_raise)
         # Create the queues inside the event loop attached to `run`.
         self._channels = {c: Queue() for c in self._channel_names}
         # Load the tasks into the loop.
-        running_tasks = [create_task(t()) for t in self._tasks]
+        self._running_tasks = [create_task(t()) for t in self._tasks]
         # Load the entry point queue.
         for s in seq:
             await self._entry_point(s)
         # ... wait until work is completed.
-        for _, q in self._channels.items():
+        for q in self._channels.values():
             await q.join()
         # Now shut the tasks down.
-        for t in running_tasks:
+        for t in self._running_tasks:
             t.cancel()
 
     def run(self, seq: Iterable) -> None:

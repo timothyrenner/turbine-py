@@ -79,3 +79,98 @@ def test_gather(topology):
 
     truth = ["a! a!", "b! b!", "c! c!"]
     assert truth == sinker
+
+
+def test_select(topology):
+    topology.source("input")(identity)
+
+    @topology.select("input", {0: "evens", 1: "odds"}, lambda x: x % 2)
+    def selector(x):
+        return x + 1
+
+    even_sinker = []
+
+    @topology.sink("evens")
+    def sink_evens(x):
+        even_sinker.append(x)
+
+    odd_sinker = []
+
+    @topology.sink("odds")
+    def sink_odds(x):
+        odd_sinker.append(x)
+
+    data = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    truth_evens = [2, 4, 6, 8, 10]
+    truth_odds = [1, 3, 5, 7, 9]
+
+    topology.run(data)
+    assert truth_evens == even_sinker
+    assert truth_odds == odd_sinker
+
+
+def test_select_default(topology):
+    topology.source("input")(identity)
+
+    topology.select(
+        "input",
+        {"a": "as", "b": "bs"},
+        lambda x: x[0],
+        default_outbound_channel="everything_else",
+    )(identity)
+
+    a_sinker = []
+
+    @topology.sink("as")
+    # a_sink ... get it?
+    def a_sink(a):
+        a_sinker.append(a)
+
+    b_sinker = []
+
+    @topology.sink("bs")
+    def b_sink(b):
+        b_sinker.append(b)
+
+    everything_else_sinker = []
+
+    @topology.sink("everything_else")
+    def everything_else_sink(everything_else):
+        everything_else_sinker.append(everything_else)
+
+    data = ["aaa", "bbb", "ccc", "ddd"]
+    a_sinker_truth = ["aaa"]
+    b_sinker_truth = ["bbb"]
+    everything_else_sinker_truth = ["ccc", "ddd"]
+
+    topology.run(data)
+
+    assert a_sinker_truth == a_sinker
+    assert b_sinker_truth == b_sinker
+    assert everything_else_sinker_truth == everything_else_sinker
+
+
+@pytest.mark.skip(
+    "Skipping select no default until exception handling is handled."
+)
+def test_select_no_default(topology):
+    topology.source("input")(identity)
+
+    topology.select("input", {"a": "as", "b": "bs"}, lambda x: x[0],)(identity)
+
+    a_sinker = []
+
+    @topology.sink("as")
+    # a_sink ... get it?
+    def a_sink(a):
+        a_sinker.append(a)
+
+    b_sinker = []
+
+    @topology.sink("bs")
+    def b_sink(b):
+        b_sinker.append(b)
+
+    data = ["aaa", "bbb", "ccc", "ddd"]
+    with pytest.raises(ValueError):
+        topology.run(data)
