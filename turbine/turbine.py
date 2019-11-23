@@ -1,10 +1,11 @@
-from asyncio import Queue, ensure_future, get_event_loop
+from asyncio import Queue, create_task, run as async_run
 from typing import Callable, List, Iterable
 from itertools import repeat
 
 # TODO Configurable queue sizes.
-# TODO Implement union
-# TODO Implement gather
+# TODO Check for the existence of the inbound channels.
+# TODO Figure out how to implement union
+
 # TODO Implement select
 # TODO Implement splatter
 # TODO Implement spread
@@ -20,9 +21,6 @@ from itertools import repeat
 # TODO Docstring collect
 # TODO Docstring sink
 
-# TODO Test scatter
-# TODO Test union
-# TODO Test gather
 # TODO Test select
 # TODO Test splatter
 # TODO Test spread
@@ -33,13 +31,16 @@ class Turbine:
     def __init__(self):
         # Map the channel aliases to a channel.
         self._channels = {}
+        self._channel_names = set()
         self._entry_point = None
         self._tasks = []
 
+    def _add_channels(self, channels: List[str]) -> None:
+        self._channel_names.update(channels)
+
     def source(self, outbound_name: str) -> Callable:
         # Add the outbound channel to the channel map.
-        if outbound_name not in self._channels:
-            self._channels[outbound_name] = Queue()
+        self._add_channels([outbound_name])
 
         # Now do the real decorator.
         def decorator(f: Callable) -> Callable:
@@ -61,10 +62,8 @@ class Turbine:
     def scatter(
         self, inbound_name: str, outbound_names: List[str], num_tasks: int = 1
     ) -> Callable:
-        # Add the outbound channels to the channel map.
-        for outbound_name in outbound_names:
-            if outbound_name not in self._channels:
-                self._channels[outbound_name] = Queue()
+        # Add any channels to the channel map.
+        self._add_channels(outbound_names + [inbound_name])
 
         def decorator(f: Callable) -> Callable:
             # Create the async task that applies the function.
@@ -89,8 +88,29 @@ class Turbine:
     def union(self):
         pass
 
-    def gather(self):
-        pass
+    def gather(
+        self, inbound_names: List[str], outbound_name: str, num_tasks: int = 1
+    ) -> Callable:
+        self._add_channels(inbound_names + [outbound_name])
+
+        def decorator(f: Callable) -> Callable:
+            # Create the async task that applies the function.
+            async def task():
+                while True:
+                    values = [
+                        await self._channels[c].get() for c in inbound_names
+                    ]
+                    output = f(*values)
+                    await self._channels[outbound_name].put(output)
+                    for c in inbound_names:
+                        self._channels[c].task_done()
+
+            # Create the tasks.
+            for _ in range(num_tasks):
+                self._tasks.append(task)
+            return f
+
+        return decorator
 
     def select(self):
         pass
@@ -99,6 +119,11 @@ class Turbine:
         pass
 
     def spread(self):
+        pass
+
+    def task(self):
+        # This is a one-in one-out route.
+        # It's for parallelizing workloads.
         pass
 
     def collect(self):
@@ -120,15 +145,19 @@ class Turbine:
         return decorator
 
     async def _run_tasks(self, seq: Iterable) -> None:
-        running_tasks = [ensure_future(t()) for t in self._tasks]
+        # Create the queues inside the event loop attached to `run`.
+        self._channels = {c: Queue() for c in self._channel_names}
+        # Load the tasks into the loop.
+        running_tasks = [create_task(t()) for t in self._tasks]
+        # Load the entry point queue.
         for s in seq:
             await self._entry_point(s)
+        # ... wait until work is completed.
         for _, q in self._channels.items():
             await q.join()
+        # Now shut the tasks down.
         for t in running_tasks:
             t.cancel()
 
     def run(self, seq: Iterable) -> None:
-        event_loop = get_event_loop()
-        event_loop.run_until_complete(self._run_tasks(seq))
-        event_loop.stop()
+        async_run(self._run_tasks(seq))
