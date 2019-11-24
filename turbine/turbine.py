@@ -1,12 +1,13 @@
 import logging
+import asyncio
 from asyncio import (
     Queue,
     create_task,
     run as async_run,
-    all_tasks,
     gather as gather_tasks,
+    Task,
 )
-from typing import Callable, List, Iterable, Dict, Any, TypeVar
+from typing import Callable, List, Iterable, Dict, Any, TypeVar, Set
 from itertools import repeat
 
 logging.basicConfig(
@@ -55,18 +56,24 @@ class Fail(Stop):
 
 class Turbine:
     def __init__(self, debug=False):
-        # Map the channel aliases to a channel.
-        self._channels = {}
-        self._channel_names = set()
-        self._channel_num_tasks = {}  # channel name -> number of tasks.
-        self._entry_point = None
-        self._tasks = []
-        self._running_tasks = []
+        # Channel names gets added to as decorators are called.
+        self._channel_names: Set[str] = set()
+        # Track the number of tasks associated with each channel so we know
+        # how many stops to send downstream. Otherwise, we'll block forever.
+        # Trust me. Trust. Me.
+        self._channel_num_tasks: Dict[str, int] = {}
+        # Map the channel aliases to a channel. This gets filled inside the
+        # event loop.
+        self._channels: Dict[str, asyncio.Queue] = {}
+        # This is how the topology gets loaded.
+        self._entry_point: Callable = None
+        self._tasks: List[Callable] = []
+        self._running_tasks: List[Task] = []
         if debug:
             logger.setLevel("DEBUG")
-        logger.debug("Hi there.")
+            logger.debug("Logger set to debug.")
 
-    async def _stop_tasks(self):
+    async def _stop_tasks(self) -> None:
         logger.debug("Stopping tasks.")
         logger.debug(f"Queue statuses: {self._queue_statuses()}.")
         tasks_done = await gather_tasks(
@@ -76,15 +83,18 @@ class Turbine:
             if isinstance(t, Fail):
                 t.raise_exc()
 
-    def _queue_statuses(self):
+    def _queue_statuses(self) -> str:
         queue_statuses = [
             f"{c}: {q.qsize()}" for c, q in self._channels.items()
         ]
         return " | ".join(queue_statuses)
 
-    def _clear_queues(self):
+    def _clear_queues(self) -> None:
         for q in self._channels.values():
-            q._queue.clear()
+            # So this is ... questionable. Have to ignore the type to get it
+            # to pass the checker because we shouldn't be reaching in for this.
+            # There is no other way to clear a queue.
+            q._queue.clear()  # type: ignore
         logger.debug("Queues allegedly cleared.")
         logger.debug(f"Queue statuses: {self._queue_statuses}.")
 
@@ -295,5 +305,4 @@ class Turbine:
         await self._stop_tasks()
 
     def run(self, seq: Iterable) -> None:
-        print(self._channel_num_tasks)
-        async_run(self._run_tasks(seq), debug=True)
+        async_run(self._run_tasks(seq))
