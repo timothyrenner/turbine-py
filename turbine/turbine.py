@@ -11,6 +11,7 @@ from itertools import repeat
 # TODO Configurable queue sizes.
 # TODO Check for the existence of the inbound channels.
 # TODO Figure out how to implement union
+# TODO Get error handling under control in a semi-elegant way if possible.
 
 # TODO Implement select
 # TODO Implement splatter
@@ -52,6 +53,7 @@ class Turbine:
         # Map the channel aliases to a channel.
         self._channels = {}
         self._channel_names = set()
+        self._channel_num_tasks = {}  # channel name -> number of tasks.
         self._entry_point = None
         self._tasks = []
         self._running_tasks = []
@@ -111,6 +113,7 @@ class Turbine:
     ) -> Callable:
         # Add any channels to the channel map.
         self._add_channels(outbound_names + [inbound_name])
+        self._channel_num_tasks[inbound_name] = num_tasks
 
         def decorator(f: Callable) -> Callable:
             # Create the async task that applies the function.
@@ -120,7 +123,8 @@ class Turbine:
                     if isinstance(input_value, Stop):
                         print(f"Scatter got a stop: {input_value}.")
                         for c in outbound_names:
-                            await self._channels[c].put(input_value)
+                            for _ in range(self._channel_num_tasks[c]):
+                                await self._channels[c].put(input_value)
                         self._channels[inbound_name].task_done()
                         return input_value
                     # Call the function on the inputs ...
@@ -145,6 +149,8 @@ class Turbine:
         self, inbound_names: List[str], outbound_name: str, num_tasks: int = 1
     ) -> Callable:
         self._add_channels(inbound_names + [outbound_name])
+        for inbound_name in inbound_names:
+            self._channel_num_tasks[inbound_name] = num_tasks
 
         def decorator(f: Callable) -> Callable:
             # Create the async task that applies the function.
@@ -188,6 +194,7 @@ class Turbine:
             if default_outbound_channel:
                 all_outbound_channels.append(default_outbound_channel)
             self._add_channels(all_outbound_channels + [inbound_channel])
+            self._channel_num_tasks[inbound_channel] = num_tasks
 
             # Create the async task that executes the function.
             async def task():
@@ -246,6 +253,8 @@ class Turbine:
         pass
 
     def sink(self, inbound_name: str, num_tasks: int = 1) -> Callable:
+        self._channel_num_tasks[inbound_name] = num_tasks
+
         def decorator(f: Callable) -> Callable:
             async def task():
                 while True:
@@ -279,4 +288,5 @@ class Turbine:
         await self._stop_tasks()
 
     def run(self, seq: Iterable) -> None:
+        print(self._channel_num_tasks)
         async_run(self._run_tasks(seq), debug=True)
