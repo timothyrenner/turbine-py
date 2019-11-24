@@ -1,5 +1,10 @@
-import asyncio
-from asyncio import Queue, create_task, run as async_run, get_event_loop
+from asyncio import (
+    Queue,
+    create_task,
+    run as async_run,
+    all_tasks,
+    gather as gather_tasks,
+)
 from typing import Callable, List, Iterable, Dict, Any, TypeVar
 from itertools import repeat
 
@@ -29,6 +34,15 @@ from itertools import repeat
 T = TypeVar("T")
 
 
+class Stop:
+    def __init__(self, exc: Exception, msg: str):
+        self.exc = exc
+        self.msg = msg
+
+    def raise_exc(self):
+        raise self.exc(self.msg)
+
+
 class Turbine:
     def __init__(self):
         # Map the channel aliases to a channel.
@@ -37,6 +51,20 @@ class Turbine:
         self._entry_point = None
         self._tasks = []
         self._running_tasks = []
+
+    async def _stop_tasks(self):
+        for t in reversed(self._running_tasks):
+            if not t.done():
+                print(f"cancelling {t}")
+                t.cancel()
+                print(f"{t} cancelled\n")
+        print("Gathering")
+        tasks_done = await gather_tasks(
+            *self._running_tasks, return_exceptions=True
+        )
+        for t in tasks_done:
+            if t:
+                raise t
 
     def _add_channels(self, channels: List[str]) -> None:
         self._channel_names.update(channels)
@@ -73,6 +101,8 @@ class Turbine:
             async def task():
                 while True:
                     input_value = await self._channels[inbound_name].get()
+                    if isinstance(input_value, Stop):
+                        break
                     # Call the function on the inputs ...
                     output = f(input_value)
                     # ... and copy the outputs to each of the outbound
@@ -100,9 +130,15 @@ class Turbine:
             # Create the async task that applies the function.
             async def task():
                 while True:
-                    values = [
-                        await self._channels[c].get() for c in inbound_names
-                    ]
+                    values = []
+                    for c in inbound_names:
+                        v = await self._channels[c].get()
+                        if isinstance(v, Stop):
+                            # ! task_done is pretty crucial.
+                            values = v
+                            break
+                    if isinstance(values, Stop):
+                        break
                     output = f(*values)
                     await self._channels[outbound_name].put(output)
                     for c in inbound_names:
@@ -134,6 +170,9 @@ class Turbine:
             async def task():
                 while True:
                     value = await self._channels[inbound_channel].get()
+                    if isinstance(value, Stop):
+                        self._channels[inbound_channel].task_done()
+                        break
                     output = f(value)
                     selector_value = selector_fn(output)
                     if (
@@ -148,11 +187,15 @@ class Turbine:
                     elif selector_value not in outbound_channels:
                         # selector value is not in the outbound channel map and
                         # there isn't a default outbound channel.
-                        raise ValueError(
-                            "No channel for selector value {value}. "
-                            "Add a default channel."
-                        )
                         self._channels[inbound_channel].task_done()
+                        for channel in outbound_channels.values():
+                            await self._channels[channel].put(
+                                Stop(
+                                    ValueError,
+                                    f"No channel for selector {value}. "
+                                    "Add a default channel.",
+                                )
+                            )
                     else:
                         # selector value is in the outbound channel map, put
                         # the value on that channel.
@@ -186,6 +229,9 @@ class Turbine:
             async def task():
                 while True:
                     value = await self._channels[inbound_name].get()
+                    if isinstance(value, Stop):
+                        self._channels[inbound_name].task_done()
+                        break
                     f(value)
                     self._channels[inbound_name].task_done()
 
@@ -196,20 +242,12 @@ class Turbine:
 
         return decorator
 
-    def _shutdown_and_raise(
-        self, loop: asyncio.AbstractEventLoop, context: Dict[str, Any]
-    ):
-        for t in self._running_tasks:
-            t.cancel()
-        loop.stop()
-        raise context["exception"]
-
     async def _run_tasks(self, seq: Iterable) -> None:
-        get_event_loop().set_exception_handler(self._shutdown_and_raise)
         # Create the queues inside the event loop attached to `run`.
         self._channels = {c: Queue() for c in self._channel_names}
         # Load the tasks into the loop.
         self._running_tasks = [create_task(t()) for t in self._tasks]
+
         # Load the entry point queue.
         for s in seq:
             await self._entry_point(s)
@@ -217,8 +255,7 @@ class Turbine:
         for q in self._channels.values():
             await q.join()
         # Now shut the tasks down.
-        for t in self._running_tasks:
-            t.cancel()
+        await self._stop_tasks()
 
     def run(self, seq: Iterable) -> None:
-        async_run(self._run_tasks(seq))
+        async_run(self._run_tasks(seq), debug=True)

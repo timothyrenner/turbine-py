@@ -150,9 +150,6 @@ def test_select_default(topology):
     assert everything_else_sinker_truth == everything_else_sinker
 
 
-@pytest.mark.skip(
-    "Skipping select no default until exception handling is handled."
-)
 def test_select_no_default(topology):
     topology.source("input")(identity)
 
