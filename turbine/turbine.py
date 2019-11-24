@@ -35,6 +35,10 @@ T = TypeVar("T")
 
 
 class Stop:
+    pass
+
+
+class Fail(Stop):
     def __init__(self, exc: Exception, msg: str):
         self.exc = exc
         self.msg = msg
@@ -58,13 +62,17 @@ class Turbine:
                 print(f"cancelling {t}")
                 t.cancel()
                 print(f"{t} cancelled\n")
-        print("Gathering")
         tasks_done = await gather_tasks(
             *self._running_tasks, return_exceptions=True
         )
+        print(tasks_done)
         for t in tasks_done:
-            if t:
-                raise t
+            if isinstance(t, Fail):
+                t.raise_exc()
+
+    def _print_queue_statuses(self):
+        for c, q in self._channels.items():
+            print(f"{c}: {q.qsize()}.")
 
     def _add_channels(self, channels: List[str]) -> None:
         self._channel_names.update(channels)
@@ -170,9 +178,12 @@ class Turbine:
             async def task():
                 while True:
                     value = await self._channels[inbound_channel].get()
+                    print(f"Selector got value {value}.")
                     if isinstance(value, Stop):
+                        for channel in outbound_channels.values():
+                            await self._channels[channel].put(value)
                         self._channels[inbound_channel].task_done()
-                        break
+                        return
                     output = f(value)
                     selector_value = selector_fn(output)
                     if (
@@ -187,15 +198,15 @@ class Turbine:
                     elif selector_value not in outbound_channels:
                         # selector value is not in the outbound channel map and
                         # there isn't a default outbound channel.
-                        self._channels[inbound_channel].task_done()
-                        for channel in outbound_channels.values():
-                            await self._channels[channel].put(
-                                Stop(
-                                    ValueError,
-                                    f"No channel for selector {value}. "
-                                    "Add a default channel.",
-                                )
-                            )
+                        # await self._entry_point(Fail(ValueError, "fuck"))
+                        fail = Fail(ValueError, "fuck")
+                        for c in outbound_channels.values():
+                            await self._channels[c].put(fail)
+                        self._channels[inbound_channel]._queue.clear()
+                        self._channels[inbound_channel]._finished.set()
+                        self._channels[inbound_channel]._unfinished_tasks = 0
+                        self._print_queue_statuses()
+                        return fail
                     else:
                         # selector value is in the outbound channel map, put
                         # the value on that channel.
@@ -228,9 +239,14 @@ class Turbine:
         def decorator(f: Callable) -> Callable:
             async def task():
                 while True:
+                    print("Sinker active.")
                     value = await self._channels[inbound_name].get()
+                    print(f"Sinker got value {value}.")
                     if isinstance(value, Stop):
-                        self._channels[inbound_name].task_done()
+                        print("Sinker got a stop.")
+                        self._channels[inbound_name]._queue.clear()
+                        self._channels[inbound_name]._finished.set()
+                        self._channels[inbound_name]._unfinished_tasks = 0
                         break
                     f(value)
                     self._channels[inbound_name].task_done()
@@ -251,9 +267,11 @@ class Turbine:
         # Load the entry point queue.
         for s in seq:
             await self._entry_point(s)
+        self._print_queue_statuses()
         # ... wait until work is completed.
         for q in self._channels.values():
             await q.join()
+        self._print_queue_statuses()
         # Now shut the tasks down.
         await self._stop_tasks()
 
