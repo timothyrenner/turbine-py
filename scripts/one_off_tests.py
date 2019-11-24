@@ -1,6 +1,6 @@
 from turbine import Turbine
 
-topology = Turbine()
+topology = Turbine(debug=True)
 
 
 @topology.source("input")

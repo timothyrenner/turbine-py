@@ -1,3 +1,4 @@
+import logging
 from asyncio import (
     Queue,
     create_task,
@@ -8,6 +9,10 @@ from asyncio import (
 from typing import Callable, List, Iterable, Dict, Any, TypeVar
 from itertools import repeat
 
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(name)s  | %(message)s"
+)
+logger = logging.getLogger("turbine")
 # TODO Configurable queue sizes.
 # TODO Check for the existence of the inbound channels.
 # TODO Figure out how to implement union
@@ -49,7 +54,7 @@ class Fail(Stop):
 
 
 class Turbine:
-    def __init__(self):
+    def __init__(self, debug=False):
         # Map the channel aliases to a channel.
         self._channels = {}
         self._channel_names = set()
@@ -57,11 +62,13 @@ class Turbine:
         self._entry_point = None
         self._tasks = []
         self._running_tasks = []
+        if debug:
+            logger.setLevel("DEBUG")
+        logger.debug("Hi there.")
 
     async def _stop_tasks(self):
-        print("Inside _stop_tasks.")
-        self._print_queue_statuses()
-        print("\n\n".join(map(str, all_tasks())))
+        logger.debug("Stopping tasks.")
+        logger.debug(f"Queue statuses: {self._queue_statuses()}.")
         tasks_done = await gather_tasks(
             *self._running_tasks, return_exceptions=True
         )
@@ -69,15 +76,17 @@ class Turbine:
             if isinstance(t, Fail):
                 t.raise_exc()
 
-    def _print_queue_statuses(self):
-        for c, q in self._channels.items():
-            print(f"{c}: {q.qsize()}.")
+    def _queue_statuses(self):
+        queue_statuses = [
+            f"{c}: {q.qsize()}" for c, q in self._channels.items()
+        ]
+        return " | ".join(queue_statuses)
 
     def _clear_queues(self):
         for q in self._channels.values():
             q._queue.clear()
-        print("queues allegedly cleared.")
-        self._print_queue_statuses()
+        logger.debug("Queues allegedly cleared.")
+        logger.debug(f"Queue statuses: {self._queue_statuses}.")
 
     def _add_channels(self, channels: List[str]) -> None:
         self._channel_names.update(channels)
@@ -90,13 +99,11 @@ class Turbine:
         def decorator(f: Callable) -> Callable:
             async def wrapper(*args, **kwargs):
                 if len(args) > 1 or not isinstance(args[0], Stop):
-                    print("not a stop.")
                     value = f(*args, **kwargs)
                 else:
-                    print("got a stop.")
                     value = args[0]
+                    logger.debug(f"Source received stop: {value}.")
                 # ... and drop that on the outbound channel.
-                print(value)
                 await self._channels[outbound_name].put(value)
 
             # The entry point will get called with Turbine.run. We need this
@@ -121,7 +128,7 @@ class Turbine:
                 while True:
                     input_value = await self._channels[inbound_name].get()
                     if isinstance(input_value, Stop):
-                        print(f"Scatter got a stop: {input_value}.")
+                        logger.debug(f"Scatter got a stop: {input_value}.")
                         for c in outbound_names:
                             for _ in range(self._channel_num_tasks[c]):
                                 await self._channels[c].put(input_value)
@@ -201,7 +208,7 @@ class Turbine:
                 while True:
                     value = await self._channels[inbound_channel].get()
                     if isinstance(value, Stop):
-                        print(f"Selector got a stop {value}.")
+                        logger.debug(f"Selector got a stop {value}.")
                         for c in all_outbound_channels:
                             await self._channels[c].put(value)
                         self._channels[inbound_channel].task_done()
@@ -260,7 +267,7 @@ class Turbine:
                 while True:
                     value = await self._channels[inbound_name].get()
                     if isinstance(value, Stop):
-                        print(f"Sinker got a stop: {value}.")
+                        logger.debug(f"Sinker got a stop: {value}.")
                         self._channels[inbound_name].task_done()
                         return value
                     f(value)
@@ -283,7 +290,7 @@ class Turbine:
         for s in seq:
             await self._entry_point(s)
         await self._entry_point(Stop())
-        self._print_queue_statuses()
+        logger.debug(f"Queue statuses: {self._queue_statuses()}.")
         # Now shut the tasks down.
         await self._stop_tasks()
 
