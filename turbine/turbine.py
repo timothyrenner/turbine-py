@@ -7,7 +7,7 @@ from asyncio import (
     gather as gather_tasks,
     Task,
 )
-from typing import Callable, List, Iterable, Dict, Any, TypeVar, Set
+from typing import Callable, List, Iterable, Dict, Any, TypeVar, Set, Type
 from itertools import repeat
 
 logging.basicConfig(
@@ -46,7 +46,7 @@ class Stop:
 
 
 class Fail(Stop):
-    def __init__(self, exc: Exception, msg: str):
+    def __init__(self, exc: Type[Exception], msg: str):
         self.exc = exc
         self.msg = msg
 
@@ -76,10 +76,10 @@ class Turbine:
     async def _send_stop(
         self, outbound_channels: List[str], stopper: Stop
     ) -> None:
+        logger.debug(f"Sending stop to {', '.join(outbound_channels)}.")
         for c in outbound_channels:
             for _ in range(self._channel_num_tasks[c]):
                 await self._channels[c].put(stopper)
-        pass
 
     async def _stop_tasks(self) -> None:
         logger.debug("Stopping tasks.")
@@ -103,8 +103,9 @@ class Turbine:
             # to pass the checker because we shouldn't be reaching in for this.
             # There is no other way to clear a queue.
             q._queue.clear()  # type: ignore
+            q._unfinished_tasks = 0  # type: ignore
         logger.debug("Queues allegedly cleared.")
-        logger.debug(f"Queue statuses: {self._queue_statuses}.")
+        logger.debug(f"Queue statuses: {self._queue_statuses()}.")
 
     def _add_channels(self, channels: List[str]) -> None:
         self._channel_names.update(channels)
@@ -142,32 +143,51 @@ class Turbine:
 
         return decorator
 
+    async def _scatter(
+        self, inbound_channel: str, outbound_channels: List[str], f: Callable,
+    ) -> Stop:
+        while True:
+            input_value = await self._channels[inbound_channel].get()
+            if isinstance(input_value, Stop):
+                logger.debug(f"Scatter received stop: {input_value}.")
+                await self._send_stop(outbound_channels, input_value)
+                self._channels[inbound_channel].task_done()
+                return input_value
+            # Call the function on the inputs ...
+            output = f(input_value)
+            # ... and copy the outputs to each of the outbound channels.
+            for output, channel in zip(repeat(output), outbound_channels):
+                await self._channels[channel].put(output)
+            self._channels[inbound_channel].task_done()
+
     def scatter(
-        self, inbound_name: str, outbound_names: List[str], num_tasks: int = 1
+        self,
+        inbound_channel: str,
+        outbound_channels: List[str],
+        num_tasks: int = 1,
     ) -> Callable:
         # Add any channels to the channel map.
-        self._add_channels(outbound_names + [inbound_name])
-        self._channel_num_tasks[inbound_name] = num_tasks
+        self._add_channels(outbound_channels + [inbound_channel])
+        self._channel_num_tasks[inbound_channel] = num_tasks
 
         def decorator(f: Callable) -> Callable:
             # Create the async task that applies the function.
-            async def task():
-                while True:
-                    input_value = await self._channels[inbound_name].get()
-                    if isinstance(input_value, Stop):
-                        logger.debug(f"Scatter got a stop: {input_value}.")
-                        for c in outbound_names:
-                            for _ in range(self._channel_num_tasks[c]):
-                                await self._channels[c].put(input_value)
-                        self._channels[inbound_name].task_done()
-                        return input_value
-                    # Call the function on the inputs ...
-                    output = f(input_value)
-                    # ... and copy the outputs to each of the outbound
-                    # channels.
-                    for output, channel in zip(repeat(output), outbound_names):
-                        await self._channels[channel].put(output)
-                    self._channels[inbound_name].task_done()
+            async def task() -> Stop:
+                try:
+                    return await self._scatter(
+                        inbound_channel, outbound_channels, f
+                    )
+                except Exception as e:
+                    logger.exception(f"Scatter got exception {e}.")
+                    fail = Fail(type(e), str(e))
+                    self._clear_queues()
+                    await self._entry_point(fail)
+                    # We need to restart the function so the topology is
+                    # repaired. This ensures the failure is appropriately
+                    # propagated.
+                    return await self._scatter(
+                        inbound_channel, outbound_channels, f
+                    )
 
             # Create all of the tasks.
             for _ in range(num_tasks):
@@ -322,4 +342,4 @@ class Turbine:
         await self._stop_tasks()
 
     def run(self, seq: Iterable) -> None:
-        async_run(self._run_tasks(seq))
+        async_run(self._run_tasks(seq), debug=True)

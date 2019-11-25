@@ -72,6 +72,29 @@ def test_scatter(topology):
     assert truth == sinker2
 
 
+def test_scatter_exception(topology):
+    @topology.source("input")
+    def identity(x):
+        return x
+
+    @topology.scatter("input", ["output_1", "output_2"])
+    def scatter(x):
+        raise ValueError("my bad")
+
+    @topology.sink("output_1")
+    def sink_1(x):
+        print(x)
+
+    @topology.sink("output_2")
+    def sink_2(x):
+        print(x)
+
+    data = ["it", "doesn't", "matter"]
+    with pytest.raises(ValueError) as e:
+        topology.run(data)
+        assert str(e) == "my bad"
+
+
 def test_gather(topology):
     topology.source("input")(identity)
 
