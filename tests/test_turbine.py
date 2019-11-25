@@ -8,7 +8,7 @@ def identity(x):
 
 @pytest.fixture
 def topology():
-    return Turbine()
+    return Turbine(debug=True)
 
 
 def test_source_sink(topology):
@@ -26,6 +26,21 @@ def test_source_sink(topology):
     topology.run(data)
 
     assert sinker == data
+
+
+def test_source_exception(topology):
+    @topology.source("input")
+    def oops(x):
+        raise ValueError("my bad")
+
+    @topology.sink("input")
+    def nope(x):
+        print(x)
+
+    data = ["it", "doesn't", "matter"]
+    with pytest.raises(ValueError) as e:
+        topology.run(data)
+        assert str(e) == "my bad"
 
 
 def test_scatter(topology):

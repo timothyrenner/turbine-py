@@ -73,6 +73,14 @@ class Turbine:
             logger.setLevel("DEBUG")
             logger.debug("Logger set to debug.")
 
+    async def _send_stop(
+        self, outbound_channels: List[str], stopper: Stop
+    ) -> None:
+        for c in outbound_channels:
+            for _ in range(self._channel_num_tasks[c]):
+                await self._channels[c].put(stopper)
+        pass
+
     async def _stop_tasks(self) -> None:
         logger.debug("Stopping tasks.")
         logger.debug(f"Queue statuses: {self._queue_statuses()}.")
@@ -101,26 +109,35 @@ class Turbine:
     def _add_channels(self, channels: List[str]) -> None:
         self._channel_names.update(channels)
 
+    async def _source(
+        self, outbound_name: str, f: Callable, *args, **kwargs
+    ) -> None:
+        if len(args) > 1 or not isinstance(args[0], Stop):
+            value = f(*args, **kwargs)
+        else:
+            value = args[0]
+            logger.debug(f"Source received stop: {value}.")
+        await self._channels[outbound_name].put(value)
+
     def source(self, outbound_name: str) -> Callable:
         # Add the outbound channel to the channel map.
         self._add_channels([outbound_name])
 
         # Now do the real decorator.
         def decorator(f: Callable) -> Callable:
-            async def wrapper(*args, **kwargs):
-                if len(args) > 1 or not isinstance(args[0], Stop):
-                    value = f(*args, **kwargs)
-                else:
-                    value = args[0]
-                    logger.debug(f"Source received stop: {value}.")
-                # ... and drop that on the outbound channel.
-                await self._channels[outbound_name].put(value)
+            async def entry_point(*args, **kwargs):
+                try:
+                    await self._source(outbound_name, f, *args, **kwargs)
+                except Exception as e:
+                    fail = Fail(type(e), str(e))
+                    self._clear_queues()
+                    await self._entry_point(fail)
 
             # The entry point will get called with Turbine.run. We need this
             # separate from other tasks because it's not an infinite loop.
             # That's really the only difference between this decorator and the
             # others ... no while True.
-            self._entry_point = wrapper
+            self._entry_point = entry_point
             return f
 
         return decorator
