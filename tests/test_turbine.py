@@ -119,6 +119,26 @@ def test_gather(topology):
     assert truth == sinker
 
 
+@pytest.mark.skip
+def test_gather_exception(topology):
+    topology.source("input")(identity)
+
+    topology.scatter("input", ["sc1", "sc2"])(identity)
+
+    @topology.gather(["sc1", "sc2"], "output")
+    def fail(x, t):
+        raise ValueError("Oops")
+
+    topology.sink("sc1")(print)
+    topology.sink("sc2")(print)
+
+    data = ["I'm", "going", "to", "fail"]
+    with pytest.raises(ValueError) as e:
+        topology.run(data)
+        print(e)
+        assert str(e) == "Oops"
+
+
 def test_select(topology):
     topology.source("input")(identity)
 

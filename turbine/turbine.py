@@ -7,9 +7,26 @@ from asyncio import (
     gather as gather_tasks,
     Task,
 )
-from typing import Callable, List, Iterable, Dict, Any, TypeVar, Set, Type
+from typing import (
+    Callable,
+    List,
+    Iterable,
+    Dict,
+    Any,
+    TypeVar,
+    Set,
+    Type,
+    Union,
+)
 from itertools import repeat
 
+# ! Ladies and gentlemen we have a race condition.
+# ! For a multilayer topology, the input queue can get filled, then plugged
+# ! with a Stop. This stop can shutdown tasks early in the topology before a
+# ! downstream task can send a failure and clear the queues. I think the
+# ! solution is to limit the size of the internal queues (it's okay for the
+# ! source queue to be huge but limiting the internal queue size will introduce
+# ! the required backpressure
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s  | %(message)s"
 )
@@ -93,7 +110,8 @@ class Turbine:
 
     def _queue_statuses(self) -> str:
         queue_statuses = [
-            f"{c}: {q.qsize()}" for c, q in self._channels.items()
+            f"{c}: {q._unfinished_tasks}/{q.qsize()}"  # type: ignore
+            for c, q in self._channels.items()
         ]
         return " | ".join(queue_statuses)
 
@@ -118,7 +136,9 @@ class Turbine:
         else:
             value = args[0]
             logger.debug(f"Source received stop: {value}.")
+            logger.debug(f"Queue statuses - {self._queue_statuses()}.")
         await self._channels[outbound_name].put(value)
+        logger.debug(f"Queue statuses - {self._queue_statuses()}.")
 
     def source(self, outbound_name: str) -> Callable:
         # Add the outbound channel to the channel map.
@@ -150,6 +170,7 @@ class Turbine:
             input_value = await self._channels[inbound_channel].get()
             if isinstance(input_value, Stop):
                 logger.debug(f"Scatter received stop: {input_value}.")
+                logger.debug(f"Queue statuses - {self._queue_statuses()}.")
                 await self._send_stop(outbound_channels, input_value)
                 self._channels[inbound_channel].task_done()
                 return input_value
@@ -199,34 +220,65 @@ class Turbine:
     def union(self):
         pass  # ! This is a tough one. In Clojure I used alts!!.
 
+    async def _gather(
+        self, inbound_channels: List[str], outbound_channel: str, f: Callable
+    ) -> Stop:
+        while True:
+            values = []
+            stop: Union[Stop, None] = None
+            # Read off the inbound channels sequentially.
+            for c in inbound_channels:
+                v = await self._channels[c].get()
+                if not isinstance(v, Stop):
+                    values.append(v)
+                else:
+                    stop = v
+                    break  # Stop means stop.
+            # Determine if a stop came from any of the inbound channels and
+            # send the stop message along.
+            if stop:
+                logger.debug(f"Gather received stop: {stop}.")
+                logger.debug(f"Queue statuses - {self._queue_statuses()}.")
+                await self._send_stop([outbound_channel], stop)
+                for c in inbound_channels:
+                    self._channels[c].task_done()
+                return stop
+
+            # If we don't stop, apply the function and send the result
+            # downstream.
+            output = f(*values)
+            await self._channels[outbound_channel].put(output)
+            for c in inbound_channels:
+                self._channels[c].task_done()
+
     def gather(
-        self, inbound_names: List[str], outbound_name: str, num_tasks: int = 1
+        self,
+        inbound_channels: List[str],
+        outbound_channel: str,
+        num_tasks: int = 1,
     ) -> Callable:
-        self._add_channels(inbound_names + [outbound_name])
-        for inbound_name in inbound_names:
+        self._add_channels(inbound_channels + [outbound_channel])
+        for inbound_name in inbound_channels:
             self._channel_num_tasks[inbound_name] = num_tasks
 
         def decorator(f: Callable) -> Callable:
             # Create the async task that applies the function.
             async def task():
-                while True:
-                    values = []
-                    for c in inbound_names:
-                        v = await self._channels[c].get()
-                        if isinstance(v, Stop):
-                            # ! task_done is pretty crucial.
-                            values = v
-                            break
-                        values.append(v)
-                    if isinstance(values, Stop):
-                        await self._channels[outbound_name].put(values)
-                        for c in inbound_names:
-                            self._channels[c].task_done()
-                        return values
-                    output = f(*values)
-                    await self._channels[outbound_name].put(output)
-                    for c in inbound_names:
-                        self._channels[c].task_done()
+                try:
+                    return await self._gather(
+                        inbound_channels, outbound_channel, f
+                    )
+                except Exception as e:
+                    logger.exception(f"Gather got an exception: {e}.")
+                    fail = Fail(type(e), str(e))
+                    self._clear_queues()
+                    await self._entry_point(fail)
+                    # We need to restart the function so the topology is
+                    # repaired. This ensures the failure is appropriately
+                    # propagated.
+                    return await self._gather(
+                        inbound_channels, outbound_channel, f
+                    )
 
             # Create the tasks.
             for _ in range(num_tasks):
