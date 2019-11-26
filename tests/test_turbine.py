@@ -222,7 +222,7 @@ def test_select_no_default(topology):
 
     b_sinker = []
 
-    @topology.sink("bs", num_tasks=2)
+    @topology.sink("bs", num_tasks=1)
     def b_sink(b):
         b_sinker.append(b)
 
