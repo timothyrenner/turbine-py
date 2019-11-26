@@ -28,6 +28,23 @@ def test_source_sink(topology):
     assert sinker == data
 
 
+def test_source_sink_multitask(topology):
+    @topology.source("input")
+    def identity(x):
+        return x
+
+    sinker = []
+
+    @topology.sink("input", num_tasks=2)
+    def sink(x):
+        sinker.append(x)
+
+    data = ["a", "b", "c"]
+    topology.run(data)
+
+    assert sinker == data
+
+
 def test_source_exception(topology):
     @topology.source("input")
     def oops(x):

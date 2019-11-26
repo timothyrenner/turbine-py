@@ -28,13 +28,11 @@ from itertools import repeat
 # ! source queue to be huge but limiting the internal queue size will introduce
 # ! the required backpressure
 logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s  | %(message)s"
+    format="%(asctime)s | %(levelname)s | %(name)s | "
+    "%(funcName)s | %(message)s"
 )
 logger = logging.getLogger("turbine")
-# TODO Configurable queue sizes.
-# TODO Check for the existence of the inbound channels.
 # TODO Figure out how to implement union
-# TODO Get error handling under control in a semi-elegant way if possible.
 
 # TODO Implement select
 # TODO Implement splatter
@@ -136,12 +134,12 @@ class Turbine:
     ) -> None:
         if len(args) > 1 or not isinstance(args[0], Stop):
             value = f(*args, **kwargs)
+            await self._channels[outbound_name].put(value)
         else:
             value = args[0]
             logger.debug(f"Source received stop: {value}.")
             logger.debug(f"Queue statuses - {self._queue_statuses()}.")
-        await self._channels[outbound_name].put(value)
-        logger.debug(f"Queue statuses - {self._queue_statuses()}.")
+            await self._send_stop([outbound_name], value)
 
     def source(self, outbound_name: str) -> Callable:
         # Add the outbound channel to the channel map.
@@ -370,8 +368,11 @@ class Turbine:
                 while True:
                     value = await self._channels[inbound_name].get()
                     if isinstance(value, Stop):
-                        logger.debug(f"Sinker got a stop: {value}.")
+                        logger.debug(f"Sinker received stop: {value}.")
                         self._channels[inbound_name].task_done()
+                        logger.debug(
+                            f"Queue statuses - {self._queue_statuses()}."
+                        )
                         return value
                     f(value)
                     self._channels[inbound_name].task_done()
@@ -388,6 +389,7 @@ class Turbine:
         self._channels = {
             c: Queue(maxsize=s) for c, s in self._channel_names.items()
         }
+        logger.debug(self._tasks)
         # Load the tasks into the loop.
         self._running_tasks = [create_task(t()) for t in self._tasks]
 
