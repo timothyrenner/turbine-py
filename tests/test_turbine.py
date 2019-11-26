@@ -89,6 +89,35 @@ def test_scatter(topology):
     assert truth == sinker2
 
 
+def test_scatter_multitask(topology):
+    @topology.source("input")
+    def identity(x):
+        return x
+
+    sinker1 = []
+    sinker2 = []
+
+    @topology.scatter("input", ["output_1", "output_2"], num_tasks=2)
+    def scatter(x):
+        return x + "!"
+
+    @topology.sink("output_1", num_tasks=1)
+    def sink1(x):
+        sinker1.append(x)
+
+    @topology.sink("output_2")
+    def sink2(x):
+        sinker2.append(x)
+
+    data = ["a", "b", "c"]
+    topology.run(data)
+
+    truth = ["a!", "b!", "c!"]
+
+    assert truth == sinker1
+    assert truth == sinker2
+
+
 def test_scatter_exception(topology):
     @topology.source("input")
     def identity(x):

@@ -91,9 +91,9 @@ class Turbine:
     async def _send_stop(
         self, outbound_channels: List[str], stopper: Stop
     ) -> None:
-        logger.debug(f"Sending stop to {', '.join(outbound_channels)}.")
         for c in outbound_channels:
             for _ in range(self._channel_num_tasks[c]):
+                logger.debug(f"Sending stop to {c}.")
                 await self._channels[c].put(stopper)
 
     async def _stop_tasks(self) -> None:
@@ -389,7 +389,6 @@ class Turbine:
         self._channels = {
             c: Queue(maxsize=s) for c, s in self._channel_names.items()
         }
-        logger.debug(self._tasks)
         # Load the tasks into the loop.
         self._running_tasks = [create_task(t()) for t in self._tasks]
 
@@ -405,5 +404,9 @@ class Turbine:
         queue_sizes = " | ".join(
             [f"{q}: {n}" for q, n in self._channel_names.items()]
         )
+        num_tasks = " | ".join(
+            [f"{q}: {n}" for q, n in self._channel_num_tasks.items()]
+        )
         logger.debug(f"Queue sizes: {queue_sizes}.")
+        logger.debug(f"Task concurrencies: {num_tasks}.")
         async_run(self._run_tasks(seq), debug=True)
