@@ -13,8 +13,8 @@ from typing import (
     Iterable,
     Dict,
     Any,
+    Tuple,
     TypeVar,
-    Set,
     Type,
     Union,
 )
@@ -74,7 +74,7 @@ class Fail(Stop):
 class Turbine:
     def __init__(self, debug=False):
         # Channel names gets added to as decorators are called.
-        self._channel_names: Set[str] = set()
+        self._channel_names: Dict[str, int] = {}
         # Track the number of tasks associated with each channel so we know
         # how many stops to send downstream. Otherwise, we'll block forever.
         # Trust me. Trust. Me.
@@ -121,12 +121,15 @@ class Turbine:
             # to pass the checker because we shouldn't be reaching in for this.
             # There is no other way to clear a queue.
             q._queue.clear()  # type: ignore
-            q._unfinished_tasks = 0  # type: ignore
         logger.debug("Queues allegedly cleared.")
         logger.debug(f"Queue statuses: {self._queue_statuses()}.")
 
-    def _add_channels(self, channels: List[str]) -> None:
-        self._channel_names.update(channels)
+    def _add_channels(self, channels: Iterable[Tuple[str, int]]) -> None:
+        for name, size in channels:
+            # This condition will apply to the entry point, which is set in the
+            # source function because that queue needs to be unbounded.
+            if name not in self._channel_names:
+                self._channel_names[name] = size
 
     async def _source(
         self, outbound_name: str, f: Callable, *args, **kwargs
@@ -142,7 +145,7 @@ class Turbine:
 
     def source(self, outbound_name: str) -> Callable:
         # Add the outbound channel to the channel map.
-        self._add_channels([outbound_name])
+        self._add_channels([(outbound_name, 0)])
 
         # Now do the real decorator.
         def decorator(f: Callable) -> Callable:
@@ -187,8 +190,8 @@ class Turbine:
         outbound_channels: List[str],
         num_tasks: int = 1,
     ) -> Callable:
-        # Add any channels to the channel map.
-        self._add_channels(outbound_channels + [inbound_channel])
+        # Add the inbound channels to the channel map.
+        self._add_channels([(inbound_channel, 1)])
         self._channel_num_tasks[inbound_channel] = num_tasks
 
         def decorator(f: Callable) -> Callable:
@@ -257,7 +260,7 @@ class Turbine:
         outbound_channel: str,
         num_tasks: int = 1,
     ) -> Callable:
-        self._add_channels(inbound_channels + [outbound_channel])
+        self._add_channels(zip(inbound_channels, repeat(1)))
         for inbound_name in inbound_channels:
             self._channel_num_tasks[inbound_name] = num_tasks
 
@@ -299,7 +302,7 @@ class Turbine:
             all_outbound_channels = list(outbound_channels.values())
             if default_outbound_channel:
                 all_outbound_channels.append(default_outbound_channel)
-            self._add_channels(all_outbound_channels + [inbound_channel])
+            self._add_channels([(inbound_channel, 1)])
             self._channel_num_tasks[inbound_channel] = num_tasks
 
             # Create the async task that executes the function.
@@ -360,6 +363,7 @@ class Turbine:
 
     def sink(self, inbound_name: str, num_tasks: int = 1) -> Callable:
         self._channel_num_tasks[inbound_name] = num_tasks
+        self._add_channels([(inbound_name, 1)])
 
         def decorator(f: Callable) -> Callable:
             async def task():
@@ -381,7 +385,9 @@ class Turbine:
 
     async def _run_tasks(self, seq: Iterable) -> None:
         # Create the queues inside the event loop attached to `run`.
-        self._channels = {c: Queue() for c in self._channel_names}
+        self._channels = {
+            c: Queue(maxsize=s) for c, s in self._channel_names.items()
+        }
         # Load the tasks into the loop.
         self._running_tasks = [create_task(t()) for t in self._tasks]
 
@@ -394,4 +400,8 @@ class Turbine:
         await self._stop_tasks()
 
     def run(self, seq: Iterable) -> None:
+        queue_sizes = " | ".join(
+            [f"{q}: {n}" for q, n in self._channel_names.items()]
+        )
+        logger.debug(f"Queue sizes: {queue_sizes}.")
         async_run(self._run_tasks(seq), debug=True)

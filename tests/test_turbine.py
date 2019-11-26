@@ -119,7 +119,7 @@ def test_gather(topology):
     assert truth == sinker
 
 
-@pytest.mark.skip
+# @pytest.mark.skip
 def test_gather_exception(topology):
     topology.source("input")(identity)
 
@@ -222,7 +222,7 @@ def test_select_no_default(topology):
 
     b_sinker = []
 
-    @topology.sink("bs")
+    @topology.sink("bs", num_tasks=2)
     def b_sink(b):
         b_sinker.append(b)
 
