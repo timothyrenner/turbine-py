@@ -92,9 +92,14 @@ class Turbine:
         self, outbound_channels: List[str], stopper: Stop
     ) -> None:
         for c in outbound_channels:
-            for _ in range(self._channel_num_tasks[c]):
-                logger.debug(f"Sending stop to {c}.")
-                await self._channels[c].put(stopper)
+            num_tasks = self._channel_num_tasks[c]
+            for _ in range(num_tasks):
+                # Only send a downstream stop if there's something to process
+                # it.
+                if self._channel_num_tasks[c] > 0:
+                    logger.debug(f"Sending stop to {c}.")
+                    await self._channels[c].put(stopper)
+                    self._channel_num_tasks[c] -= 1
 
     async def _stop_tasks(self) -> None:
         logger.debug("Stopping tasks.")
@@ -112,6 +117,12 @@ class Turbine:
             for c, q in self._channels.items()
         ]
         return " | ".join(queue_statuses)
+
+    def _task_statuses(self) -> str:
+        task_statuses = [
+            f"{c}: {n}" for c, n in self._channel_num_tasks.items()
+        ]
+        return " | ".join(task_statuses)
 
     def _clear_queues(self) -> None:
         for q in self._channels.values():
@@ -139,6 +150,7 @@ class Turbine:
             value = args[0]
             logger.debug(f"Source received stop: {value}.")
             logger.debug(f"Queue statuses - {self._queue_statuses()}.")
+            logger.debug(f"Task statuses - {self._task_statuses()}.")
             await self._send_stop([outbound_name], value)
 
     def source(self, outbound_name: str) -> Callable:
@@ -172,6 +184,7 @@ class Turbine:
             if isinstance(input_value, Stop):
                 logger.debug(f"Scatter received stop: {input_value}.")
                 logger.debug(f"Queue statuses - {self._queue_statuses()}.")
+                logger.debug(f"Task statuses - {self._task_statuses()}.")
                 await self._send_stop(outbound_channels, input_value)
                 self._channels[inbound_channel].task_done()
                 return input_value
@@ -240,6 +253,7 @@ class Turbine:
             if stop:
                 logger.debug(f"Gather received stop: {stop}.")
                 logger.debug(f"Queue statuses - {self._queue_statuses()}.")
+                logger.debug(f"Task statuses - {self._task_statuses()}.")
                 await self._send_stop([outbound_channel], stop)
                 for c in inbound_channels:
                     self._channels[c].task_done()
@@ -327,8 +341,10 @@ class Turbine:
                     elif selector_value not in outbound_channels:
                         # selector value is not in the outbound channel map and
                         # there isn't a default outbound channel.
-                        # await self._entry_point(Fail(ValueError, "fuck"))
-                        fail = Fail(ValueError, "fuck")
+                        fail = Fail(
+                            ValueError,
+                            f"No selector value for {selector_value}.",
+                        )
                         self._clear_queues()
                         await self._entry_point(fail)
                     else:
@@ -370,8 +386,12 @@ class Turbine:
                     if isinstance(value, Stop):
                         logger.debug(f"Sinker received stop: {value}.")
                         self._channels[inbound_name].task_done()
+                        self._channel_num_tasks[inbound_name] -= 1
                         logger.debug(
                             f"Queue statuses - {self._queue_statuses()}."
+                        )
+                        logger.debug(
+                            f"Task statuses - {self._task_statuses()}."
                         )
                         return value
                     f(value)
