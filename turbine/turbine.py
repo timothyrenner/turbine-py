@@ -87,6 +87,15 @@ class Turbine:
         if debug:
             logger.setLevel("DEBUG")
             logger.debug("Logger set to debug.")
+        self._topology_running = None
+
+    async def _fail_topology(
+        self, fail_exc: Type[Exception], fail_msg: str
+    ) -> None:
+        fail = Fail(fail_exc, fail_msg)
+        self._clear_queues()
+        self._topology_running = False
+        await self._entry_point(fail)
 
     async def _send_stop(
         self, outbound_channels: List[str], stopper: Stop
@@ -132,6 +141,7 @@ class Turbine:
             q._queue.clear()  # type: ignore
         logger.debug("Queues allegedly cleared.")
         logger.debug(f"Queue statuses: {self._queue_statuses()}.")
+        logger.debug(f"Task statuses - {self._task_statuses()}.")
 
     def _add_channels(self, channels: Iterable[Tuple[str, int]]) -> None:
         for name, size in channels:
@@ -163,9 +173,8 @@ class Turbine:
                 try:
                     await self._source(outbound_name, f, *args, **kwargs)
                 except Exception as e:
-                    fail = Fail(type(e), str(e))
-                    self._clear_queues()
-                    await self._entry_point(fail)
+                    logger.exception(f"Source got exception {e}.")
+                    await self._fail_topology(type(e), str(e))
 
             # The entry point will get called with Turbine.run. We need this
             # separate from other tasks because it's not an infinite loop.
@@ -214,9 +223,7 @@ class Turbine:
                     )
                 except Exception as e:
                     logger.exception(f"Scatter got exception {e}.")
-                    fail = Fail(type(e), str(e))
-                    self._clear_queues()
-                    await self._entry_point(fail)
+                    await self._fail_topology(type(e), str(e))
                     # We need to restart the function so the topology is
                     # repaired. This ensures the failure is appropriately
                     # propagated.
@@ -285,9 +292,7 @@ class Turbine:
                     )
                 except Exception as e:
                     logger.exception(f"Gather got an exception: {e}.")
-                    fail = Fail(type(e), str(e))
-                    self._clear_queues()
-                    await self._entry_point(fail)
+                    await self._fail_topology(type(e), str(e))
                     # We need to restart the function so the topology is
                     # repaired. This ensures the failure is appropriately
                     # propagated.
@@ -411,10 +416,12 @@ class Turbine:
         }
         # Load the tasks into the loop.
         self._running_tasks = [create_task(t()) for t in self._tasks]
+        self._topology_running = True
 
         # Load the entry point queue.
         for s in seq:
-            await self._entry_point(s)
+            if self._topology_running:
+                await self._entry_point(s)
         await self._entry_point(Stop())
         logger.debug(f"Queue statuses: {self._queue_statuses()}.")
         # Now shut the tasks down.

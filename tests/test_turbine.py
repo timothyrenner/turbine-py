@@ -45,7 +45,6 @@ def test_source_sink_multitask(topology):
     assert sinker == data
 
 
-@pytest.mark.skip("hangs")
 def test_source_exception(topology):
     @topology.source("input")
     def oops(x):
