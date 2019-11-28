@@ -20,19 +20,13 @@ from typing import (
 )
 from itertools import repeat
 
-# ! Ladies and gentlemen we have a race condition.
-# ! For a multilayer topology, the input queue can get filled, then plugged
-# ! with a Stop. This stop can shutdown tasks early in the topology before a
-# ! downstream task can send a failure and clear the queues. I think the
-# ! solution is to limit the size of the internal queues (it's okay for the
-# ! source queue to be huge but limiting the internal queue size will introduce
-# ! the required backpressure
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | "
     "%(funcName)s | %(message)s"
 )
 logger = logging.getLogger("turbine")
 # TODO Figure out how to implement union
+# TODO Look into changing queue sizes to match num_tasks.
 
 # TODO Implement select
 # TODO Implement splatter
