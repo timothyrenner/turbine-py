@@ -89,7 +89,8 @@ class Turbine:
         fail = Fail(fail_exc, fail_msg)
         self._clear_queues()
         self._topology_running = False
-        await self._entry_point(fail)
+        await self._send_stop(list(self._channels.keys()), fail)
+        return fail
 
     async def _send_stop(
         self, outbound_channels: List[str], stopper: Stop
@@ -216,13 +217,16 @@ class Turbine:
                     )
                 except Exception as e:
                     logger.exception(f"Scatter got exception {e}.")
-                    await self._fail_topology(type(e), str(e))
+                    fail = Fail(type(e), str(e))
+                    self._channel_num_tasks[inbound_channel] -= 1
+                    logger.debug(f"Task statuses - {self._task_statuses()}.")
+                    return await self._fail_topology(type(e), str(e))
                     # We need to restart the function so the topology is
                     # repaired. This ensures the failure is appropriately
                     # propagated.
-                    return await self._scatter(
-                        inbound_channel, outbound_channels, f
-                    )
+                    # return await self._scatter(
+                    #    inbound_channel, outbound_channels, f
+                    # )
 
             # Create all of the tasks.
             for _ in range(num_tasks):
@@ -285,13 +289,11 @@ class Turbine:
                     )
                 except Exception as e:
                     logger.exception(f"Gather got an exception: {e}.")
-                    await self._fail_topology(type(e), str(e))
-                    # We need to restart the function so the topology is
-                    # repaired. This ensures the failure is appropriately
-                    # propagated.
-                    return await self._gather(
-                        inbound_channels, outbound_channel, f
-                    )
+                    fail = Fail(type(e), str(e))
+                    for inbound_channel in inbound_channels:
+                        self._channel_num_tasks[inbound_channel] -= 1
+                    logger.debug(f"Task statuses - {self._task_statuses()}.")
+                    return await self._fail_topology(type(e), str(e))
 
             # Create the tasks.
             for _ in range(num_tasks):
@@ -413,10 +415,10 @@ class Turbine:
 
         # Load the entry point queue.
         for s in seq:
-            logger.debug(f"Topology running: {self._topology_running}.")
             if self._topology_running:
                 await self._entry_point(s)
-        await self._entry_point(Stop())
+        if self._topology_running:
+            await self._entry_point(Stop())
         logger.debug(f"Queue statuses: {self._queue_statuses()}.")
         # Now shut the tasks down.
         await self._stop_tasks()
