@@ -118,7 +118,7 @@ def test_scatter_multitask(topology):
     assert truth == sinker2
 
 
-@pytest.mark.skip("hangs")
+# @pytest.mark.skip("hangs")
 def test_scatter_exception(topology):
     @topology.source("input")
     def identity(x):

@@ -106,13 +106,14 @@ class Turbine:
                 # Only send a downstream stop if there's something to process
                 # it.
                 if self._channel_num_tasks[c] > 0:
-                    logger.debug(f"Sending stop to {c}.")
+                    logger.debug(f"Sending stop to {c}: {stopper}.")
                     await self._channels[c].put(stopper)
                     self._channel_num_tasks[c] -= 1
 
     async def _stop_tasks(self) -> None:
         logger.debug("Stopping tasks.")
         logger.debug(f"Queue statuses: {self._queue_statuses()}.")
+        logger.debug(f"Task statuses - {self._task_statuses()}.")
         tasks_done = await gather_tasks(
             *self._running_tasks, return_exceptions=True
         )
@@ -139,6 +140,7 @@ class Turbine:
             # to pass the checker because we shouldn't be reaching in for this.
             # There is no other way to clear a queue.
             q._queue.clear()  # type: ignore
+            q._unfinished_tasks = 0 # type: ignore
         logger.debug("Queues allegedly cleared.")
         logger.debug(f"Queue statuses: {self._queue_statuses()}.")
         logger.debug(f"Task statuses - {self._task_statuses()}.")
@@ -164,9 +166,6 @@ class Turbine:
             await self._send_stop([outbound_name], value)
 
     def source(self, outbound_name: str) -> Callable:
-        # Add the outbound channel to the channel map.
-        self._add_channels([(outbound_name, 0)])
-
         # Now do the real decorator.
         def decorator(f: Callable) -> Callable:
             async def entry_point(*args, **kwargs):
@@ -420,6 +419,7 @@ class Turbine:
 
         # Load the entry point queue.
         for s in seq:
+            logger.debug(f"Topology running: {self._topology_running}.")
             if self._topology_running:
                 await self._entry_point(s)
         await self._entry_point(Stop())
