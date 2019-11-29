@@ -135,7 +135,7 @@ class Turbine:
             # to pass the checker because we shouldn't be reaching in for this.
             # There is no other way to clear a queue.
             q._queue.clear()  # type: ignore
-            q._unfinished_tasks = 0 # type: ignore
+            q._unfinished_tasks = 0  # type: ignore
         logger.debug("Queues allegedly cleared.")
         logger.debug(f"Queue statuses: {self._queue_statuses()}.")
         logger.debug(f"Task statuses - {self._task_statuses()}.")
