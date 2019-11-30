@@ -3,7 +3,7 @@ dist: xenial
 python:
 - '3.7'
 install:
-- pip install -r test_requirements.txt
+- pip install -r tests_require.txt
 - pip install -e .
 script:
 - flake8 turbine/
